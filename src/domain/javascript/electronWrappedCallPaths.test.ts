@@ -175,6 +175,88 @@ it.each([
 );
 
 describe("wrapped contextBridge exposure methods", () => {
+  it.each(["main", "isolated"] as const)(
+    "keeps repeated %s-world helper exposures under their own API keys",
+    (world) => {
+      const method =
+        world === "main" ? "exposeInMainWorld" : "exposeInIsolatedWorld";
+      const worldArgument = world === "main" ? "" : "1001, ";
+      const result = analyzeJavaScriptStaticSource(`
+        const { contextBridge, ipcRenderer } = require("electron");
+        function expose(key, api) { contextBridge.${method}(${worldArgument}key, api); }
+        expose("one", { ping: () => ipcRenderer.send("one:ping") });
+        expose("two", { pong: () => ipcRenderer.send("two:pong") });
+      `);
+      expect(result.electron.context_bridge_apis).toMatchObject([
+        {
+          world,
+          api_key: "one",
+          members: ["ping"],
+          resolution_basis: "wrapper-substitution",
+        },
+        {
+          world,
+          api_key: "two",
+          members: ["pong"],
+          resolution_basis: "wrapper-substitution",
+        },
+      ]);
+      expect(
+        result.electron.call_paths?.map(({ entry }) => entry).sort(),
+      ).toEqual(["one.ping", "two.pong"]);
+    },
+  );
+
+  it("keeps distinct helper API objects separate and deduplicates an identical candidate", () => {
+    const result = analyzeJavaScriptStaticSource(`
+      const { contextBridge } = require("electron");
+      function expose(key, api) { contextBridge.exposeInMainWorld(key, api); }
+      expose("shared", { ping: true });
+      expose("shared", { pong: true });
+      expose("shared", { ping: true });
+    `);
+    expect(result.electron.context_bridge_apis).toMatchObject([
+      { api_key: "shared", members: ["ping"] },
+      { api_key: "shared", members: ["pong"] },
+    ]);
+  });
+
+  it("retains direct nested member paths for every substituted helper key", () => {
+    const result = analyzeJavaScriptStaticSource(`
+      const { contextBridge } = require("electron");
+      function expose(key) {
+        contextBridge.exposeInMainWorld(key, { nested: { ping: true } });
+      }
+      expose("one");
+      expose("two");
+    `);
+    expect(result.electron.context_bridge_apis).toMatchObject([
+      { api_key: "one", members: ["nested", "nested.ping"] },
+      { api_key: "two", members: ["nested", "nested.ping"] },
+    ]);
+  });
+
+  it("keeps helper candidates for distinct isolated world IDs separate", () => {
+    const result = analyzeJavaScriptStaticSource(`
+      const { contextBridge } = require("electron");
+      function expose(key, worldId, api) { contextBridge.exposeInIsolatedWorld(worldId, key, api); }
+      expose("shared", 1001, { ping: true });
+      expose("shared", 1002, { pong: true });
+    `);
+    expect(result.electron.context_bridge_apis).toMatchObject([
+      {
+        world_id: { status: "literal", value: 1001 },
+        api_key: "shared",
+        members: ["ping"],
+      },
+      {
+        world_id: { status: "literal", value: 1002 },
+        api_key: "shared",
+        members: ["pong"],
+      },
+    ]);
+  });
+
   it("retains the original expression for a dynamic isolated world id", () => {
     const result = analyzeJavaScriptStaticSource(
       bundle(

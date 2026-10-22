@@ -188,6 +188,18 @@ export const collectElectronWrappedCallPaths = (
   const paths: ElectronCallPath[] = [];
   const seen = new Set<string>();
   const unconditionalRegistrations = new Set<string>();
+  // Keep the syntax pass's observation separate from substituted candidates.
+  // Multiple helper invocations share a call site, but not its resolved API.
+  const bridgeSyntaxBySite = new Map<
+    string,
+    { readonly value: ElectronContextBridgeFinding; slot?: number }
+  >(
+    accumulator.contextBridgeApis.map(({ value }, slot) => [
+      JSON.stringify(value.location),
+      { value, slot },
+    ]),
+  );
+  const seenBridgeCandidates = new Set<string>();
   const step = (
     node: t.Node,
     kind: ElectronCallPathStep["kind"],
@@ -830,10 +842,7 @@ export const collectElectronWrappedCallPaths = (
     if (!keyContext || !metadataContext(keyContext, object)) return;
     const members = [...resolver.members(object)].sort();
     const location = range(node);
-    const existing = accumulator.contextBridgeApis.find(
-      ({ value }) =>
-        JSON.stringify(value.location) === JSON.stringify(location),
-    );
+    const observed = bridgeSyntaxBySite.get(JSON.stringify(location));
     const finding: ElectronContextBridgeFinding = {
       world: exposure.world,
       world_id: worldId,
@@ -845,7 +854,7 @@ export const collectElectronWrappedCallPaths = (
       // symbolic resolver enumerates only immediate object keys, so its
       // replacement must not erase paths already established at this call.
       members: [
-        ...new Set([...(existing?.value.members ?? []), ...members]),
+        ...new Set([...(observed?.value.members ?? []), ...members]),
       ].sort(compareUnicodeCodePoints),
       unknown_members: resolver.unknownMembers(object),
       module_key: null,
@@ -863,21 +872,30 @@ export const collectElectronWrappedCallPaths = (
       guardedObject ||
       guardedDispatch;
     if (guarded) accumulator.unknownFindings += 1;
-    // Existing entries are raw syntax observations and remain valid even when
+    // Direct syntax observations remain valid even when
     // symbolic substitution can only describe this call under a predicate.
-    if (!guarded && existing)
-      (existing.value.api_status !== "object-literal" ||
-        existing.value.unknown_members > 0) &&
-        accumulator.contextBridgeApis.splice(
-          accumulator.contextBridgeApis.indexOf(existing),
-          1,
-          { offset: node.start ?? -1, value: finding },
-        );
-    else if (!guarded)
-      accumulator.contextBridgeApis.push({
-        offset: node.start ?? -1,
-        value: finding,
-      });
+    if (
+      !guarded &&
+      (observed === undefined ||
+        observed.value.api_status !== "object-literal" ||
+        observed.value.unknown_members > 0 ||
+        observed.value.api_key !== finding.api_key ||
+        JSON.stringify(observed.value.world_id) !== JSON.stringify(worldId))
+    ) {
+      const candidateKey = JSON.stringify(finding);
+      if (!seenBridgeCandidates.has(candidateKey)) {
+        seenBridgeCandidates.add(candidateKey);
+        const entry = { offset: node.start ?? -1, value: finding };
+        // Resolve the original syntax placeholder once. Later invocations add
+        // their own candidates without replacing or borrowing earlier members.
+        if (observed?.slot === undefined)
+          accumulator.contextBridgeApis.push(entry);
+        else {
+          accumulator.contextBridgeApis[observed.slot] = entry;
+          delete observed.slot;
+        }
+      }
+    }
     for (const { name, path, fn } of bridgeMemberFunctions(object)) {
       const memberContext = metadataContext(keyContext, fn);
       if (!memberContext) continue;

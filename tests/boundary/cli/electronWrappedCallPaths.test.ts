@@ -23,6 +23,58 @@ const callPathTerminalObservationSchema = z.object({
   evidence: z.object({ coverage: z.object({ status: z.string() }) }),
 });
 
+for (const surface of ["CLI", "stdio MCP"] as const)
+  cliTest(
+    `keeps repeated bridge helper exposures separate through the public ${surface}`,
+    async ({ cli }) => {
+      const root = await createTestTempDirectory("rea-electron-bridge-keys-");
+      await writeFixtureFiles(root, {
+        "preload.js": `const { contextBridge, ipcRenderer } = require("electron");
+          function expose(key, api) { contextBridge.exposeInMainWorld(key, api); }
+          expose("one", { ping: () => ipcRenderer.send("one:ping") });
+          expose("two", { pong: () => ipcRenderer.send("two:pong") });`,
+      });
+      const application = await analyzeJavaScriptDirectory(surface, cli, root);
+      expect(application.summary).toMatchObject({
+        context_bridge_apis: 2,
+        exposed_api_members: 2,
+      });
+      const apis = application.graph.nodes
+        .filter(({ kind }) => kind === "context-bridge-api")
+        .flatMap(({ observations }) => observations);
+      expect(apis).toHaveLength(2);
+      expect(
+        apis
+          .map(({ properties }) => ({
+            api_key: properties.api_key,
+            members: properties.members,
+          }))
+          .sort((left, right) =>
+            String(left.api_key).localeCompare(String(right.api_key)),
+          ),
+      ).toEqual([
+        { api_key: "one", members: ["ping"] },
+        { api_key: "two", members: ["pong"] },
+      ]);
+      for (const api of apis)
+        expect(api).toMatchObject({
+          properties: {
+            resolution_basis: "wrapper-substitution",
+            unknown_members: 0,
+          },
+          evidence: {
+            state: "inferred",
+            authority: "static-relationship-inference",
+          },
+        });
+      const entries = application.graph.nodes
+        .flatMap(({ observations }) => observations)
+        .filter(({ properties }) => properties.step_kind === "exposure")
+        .map(({ properties }) => properties.entry);
+      expect([...new Set(entries)].sort()).toEqual(["one.ping", "two.pong"]);
+    },
+  );
+
 const restArrayPropertyCases = [
   {
     name: "leading-zero index",
