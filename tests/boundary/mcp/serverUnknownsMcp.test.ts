@@ -21,6 +21,7 @@ import { jsonValueSchema } from "../../../src/domain/jsonValue.js";
 import { PROCESS_PROVIDER } from "../../../src/domain/process/processEvidenceProvider.js";
 
 import { processCaptureSchema } from "../../../src/domain/process/processCapture.js";
+import { residualUnknownSchema } from "../../../src/domain/residualUnknown.js";
 const resources: Array<{ close(): Promise<void> }> = [];
 
 afterEach(async () => {
@@ -87,6 +88,127 @@ const structured = (result: CallToolResult): Record<string, unknown> => {
     throw new Error("missing structured result");
   return Object.fromEntries(Object.entries(result.structuredContent));
 };
+
+it("preserves unknown input diagnostics and atomic revisions over MCP", async () => {
+  const session = createTestBinarySession(providerWithCapabilities([]));
+  const server = createServer({ kind: "session", session });
+  const client = new Client({
+    name: "unknown-input-diagnostics",
+    version: "1",
+  });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  resources.push(client, server);
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  const call = (name: string, arguments_: Record<string, unknown>) =>
+    client.callTool({ name, arguments: arguments_ });
+  const fields = {
+    severity: "medium",
+    supporting_evidence_ids: [],
+    contradicting_evidence_ids: [],
+    required_authority: "analyst-inference",
+    required_confidence: "observed",
+    required_environment: null,
+    recommended_probes: [],
+    relationships: [],
+  };
+  const created = residualUnknownSchema.parse(
+    structured(
+      await call("record_unknown", {
+        question: "Does the result apply?",
+        domain: "input-diagnostics",
+        ...fields,
+      }),
+    ).result,
+  );
+  const before = session.exportEvidenceBundle();
+  const evidenceId = created.mutation_evidence_ids[0];
+  const overlap = parseMcpToolError(
+    await call("record_unknown", {
+      question: "Can one observation support and contradict?",
+      domain: "input-diagnostics",
+      ...fields,
+      supporting_evidence_ids: [evidenceId],
+      contradicting_evidence_ids: [evidenceId],
+    }),
+  ).error;
+  expect(overlap).toMatchObject({
+    code: "invalid_request",
+    category: "invalid_input",
+    retryable: false,
+    recovery: { kind: "inspect_input_contract", operation: "record_unknown" },
+    details: {
+      issues: [
+        {
+          path: ["supporting_evidence_ids"],
+          reason: "invalid_value",
+          message: "Evidence cannot simultaneously support and contradict",
+        },
+      ],
+    },
+  });
+  const update = {
+    ...fields,
+    unknown_id: created.unknown_id,
+    expected_revision: created.revision,
+    status: "resolved",
+    resolution: null,
+  };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const invalid = parseMcpToolError(
+      await call("update_unknown", update),
+    ).error;
+    expect(invalid).toMatchObject({
+      code: "invalid_request",
+      category: "invalid_input",
+      retryable: false,
+      recovery: { kind: "inspect_input_contract", operation: "update_unknown" },
+      details: {
+        issues: [
+          {
+            path: ["resolution"],
+            reason: "invalid_value",
+            message: "Only resolved unknowns carry a resolution",
+          },
+        ],
+      },
+    });
+    expect(invalid.message).not.toContain("Evidence state changed");
+  }
+  expect(session.exportEvidenceBundle()).toEqual(before);
+  expect(structured(await call("list_unknowns", {}))).toMatchObject({
+    result: { items: [{ revision: 1, status: "open" }] },
+  });
+  const missingReference = parseMcpToolError(
+    await call("update_unknown", {
+      ...update,
+      status: "investigating",
+      supporting_evidence_ids: [`ev_${"a".repeat(64)}`],
+    }),
+  ).error;
+  expect(missingReference).toMatchObject({
+    code: "evidence_integrity_mismatch",
+    details: { reason: "integrity" },
+  });
+  expect(session.exportEvidenceBundle()).toEqual(before);
+  const corrected = {
+    ...update,
+    resolution: {
+      disposition: "withdrawn",
+      rationale: "Question withdrawn",
+      evidence_ids: [],
+    },
+  };
+  expect(
+    residualUnknownSchema.parse(
+      structured(await call("update_unknown", corrected)).result,
+    ),
+  ).toMatchObject({ revision: 2, status: "resolved" });
+  expect(
+    parseMcpToolError(await call("update_unknown", corrected)).error,
+  ).toMatchObject({ code: "revision_conflict", retryable: true });
+});
 
 it("does not record capability unavailability without supporting Evidence", async () => {
   const session = createTestBinarySession(

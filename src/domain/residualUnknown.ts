@@ -209,6 +209,7 @@ const refineRevision = (value: UnknownRevision, context: z.RefinementCtx) => {
     context.addIssue({
       code: "custom",
       message: "Evidence cannot simultaneously support and contradict",
+      path: ["supporting_evidence_ids"],
     });
   const relationships = value.relationships.map(
     (relationship) => `${relationship.type}:${relationship.unknown_id}`,

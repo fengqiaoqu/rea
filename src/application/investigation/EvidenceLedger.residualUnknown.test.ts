@@ -4,6 +4,7 @@ import canonicalize from "canonicalize";
 import { describe, expect, it } from "vitest";
 
 import { EvidenceLedger } from "./EvidenceLedger.js";
+import { projectAnalysisError } from "../../domain/analysisErrorProjection.js";
 import { createEvidence } from "../../domain/evidence.js";
 import {
   createEvidenceBundle,
@@ -76,6 +77,46 @@ const update = (
     resolution: null,
     ...overrides,
   });
+
+it.each(["record", "atomic"] as const)(
+  "keeps %s unknown input failures separate from registry integrity and commits nothing",
+  (mode) => {
+    const store = ledger();
+    const supporting = evidence("overlap-support");
+    expect(store.record(supporting).ok).toBe(true);
+    const before = store.export();
+    const overlapping = input("Can evidence support and contradict?", {
+      supporting_evidence_ids: [supporting.evidence_id],
+      contradicting_evidence_ids: [supporting.evidence_id],
+    });
+    const result =
+      mode === "record"
+        ? store.recordUnknown(overlapping, mutation("overlap-record"))
+        : store.recordWithUnknown(
+            evidence("overlap-derived"),
+            overlapping,
+            mutation("overlap-atomic"),
+          );
+    if (result.ok) throw new Error("Overlapping Evidence was accepted");
+    expect(result.error.cause).toHaveProperty("issues");
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      code: "invalid_request",
+      category: "invalid_input",
+      retryable: false,
+      recovery: { kind: "inspect_input_contract", operation: "record_unknown" },
+      details: {
+        issues: [
+          {
+            path: ["supporting_evidence_ids"],
+            reason: "invalid_value",
+            message: "Evidence cannot simultaneously support and contradict",
+          },
+        ],
+      },
+    });
+    expect(store.export()).toEqual(before);
+  },
+);
 
 describe("residual unknown registry reads and identity", () => {
   it("seals mutation Evidence without freezing caller-owned inputs", () => {
