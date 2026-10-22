@@ -602,6 +602,31 @@ describe("analysis error projection: browser provider failures", () => {
       details: { operation: "observe_web_session", reason: "timeout" },
     });
   });
+
+  it("keeps explicit missing-target recovery when attributing a browser failure", () => {
+    const original = new BrowserObservationError(
+      "inspect_web_page",
+      "target_not_found",
+      {
+        detail: "Target selected-page disappeared.",
+        remediationAction:
+          "Select the replacement page from the new inventory.",
+      },
+    );
+    expect(
+      projectAnalysisError(original.forOperation("discover_webmcp_tools")),
+    ).toMatchObject({
+      code: "target_unavailable",
+      message: "Target selected-page disappeared.",
+      remediation: {
+        action: "Select the replacement page from the new inventory.",
+      },
+      details: {
+        operation: "discover_webmcp_tools",
+        reason: "target_not_found",
+      },
+    });
+  });
 });
 
 describe("analysis error projection: Hopper provider failures", () => {

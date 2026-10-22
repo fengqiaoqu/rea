@@ -8,6 +8,9 @@ import {
 } from "./analysisErrorBase.js";
 import { AnalysisCancelledError } from "./analysisErrorCore.js";
 
+const targetDiscoveryRecovery =
+  "Refresh target discovery for that endpoint and retry with a returned target ID.";
+
 /** A bounded passive browser observation failed at its CDP boundary. */
 export class BrowserObservationError extends AnalysisError {
   readonly _tag = "BrowserObservationError";
@@ -30,7 +33,9 @@ export class BrowserObservationError extends AnalysisError {
     this.detail = options?.detail;
     this.userMessage =
       options?.detail ?? observationFailureMessage(operation, reason);
-    this.remediationAction = options?.remediationAction;
+    this.remediationAction =
+      options?.remediationAction ??
+      (reason === "target_not_found" ? targetDiscoveryRecovery : undefined);
     this.cleanupIncomplete =
       this.cleanup !== undefined || reason === "cleanup_failed";
     this.setCleanupResources(
@@ -80,7 +85,7 @@ const observationFailureMessage = (
   if (reason === "endpoint_unreachable")
     return `${operation} could not reach the selected loopback debugging endpoint. Verify that the target process is running with debugging enabled and that the endpoint's port matches it, then retry.`;
   if (reason === "target_not_found")
-    return `${operation} could not find the selected target at the debugging endpoint. Refresh target discovery for that endpoint and retry with a returned target ID.`;
+    return `${operation} could not find the selected target at the debugging endpoint. ${targetDiscoveryRecovery}`;
   if (reason === "target_session_detached")
     return `${operation} lost its debugging session while the target may still exist. Refresh target discovery and attach to the selected target again.`;
   if (reason === "service_worker_blocked")

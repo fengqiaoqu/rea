@@ -34,6 +34,30 @@ afterEach(async () => {
 });
 
 it(
+  "keeps refresh-discovery recovery for a missing browser target through the CLI",
+  async () => {
+    const browser = await startFakeCdpBrowser();
+    browsers.push(browser);
+    const result = await runCli(
+      ["inspect-web-page", browser.endpoint, "stale-page", "--json"],
+      process.env,
+    );
+    expect(result).toMatchObject({
+      code: "target_unavailable",
+      message: "Target stale-page was not found at the selected endpoint.",
+      remediation: {
+        action:
+          "Refresh target discovery for that endpoint and retry with a returned target ID.",
+      },
+      details: { operation: "inspect_web_page", reason: "target_not_found" },
+    });
+    expect(browser.commands).toHaveLength(0);
+    expect(browser.openedConnectionCount()).toBe(0);
+  },
+  INTEGRATION_TEST_TIMEOUT_MS,
+);
+
+it(
   "browser CLI parity returns the same Evidence discovery and inspection contracts",
   async () => {
     const browser = await startFakeCdpBrowser({

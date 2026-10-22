@@ -437,6 +437,14 @@ describe("CdpBrowserProvider: target selection detail", () => {
         expect(projected).toMatchObject({
           code: "target_unavailable",
           message: detail,
+          remediation: {
+            action:
+              reason === "target_not_found"
+                ? expect.stringContaining(
+                    "Refresh target discovery for that endpoint and retry with a returned target ID.",
+                  )
+                : detail,
+          },
         });
         // Only the attributed operation differs from the inspect projection.
         if (operation === "inspect_web_page")
