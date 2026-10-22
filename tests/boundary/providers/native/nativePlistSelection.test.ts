@@ -1,4 +1,4 @@
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it, onTestFinished } from "vitest";
 import { NativeMacOSProvider } from "../../../../src/native/NativeMacOSProvider.js";
@@ -130,6 +130,75 @@ it("does not invent selection facts for unresolved scope failures", () => {
   expect(projectAnalysisError(error).code).not.toBe("invalid_request");
   expect(projectAnalysisError(error).code).not.toBe("capability_unavailable");
 });
+
+it.each(["ELOOP", "ENAMETOOLONG"])(
+  "classifies a resolved plist's %s as file readiness while preserving selection intent",
+  (code) => {
+    const path = "/fixtures/selected.plist";
+    const cause = Object.assign(new Error(`open failed: ${code}`), { code });
+    for (const origin of ["selected", "default"] as const) {
+      const error = nativePlistFailure(cause, { path, origin });
+      expect(error.cause).toBe(cause);
+      const projected = projectAnalysisError(error);
+      expect(projected).toMatchObject({
+        code:
+          origin === "selected" ? "invalid_request" : "capability_unavailable",
+        retryable: false,
+        details: {
+          operation: "inspect_plist",
+          ...(origin === "selected"
+            ? { issues: [{ path: ["path"], reason: "invalid_value" }] }
+            : { reason: expect.stringContaining(path) }),
+        },
+      });
+      expect(JSON.stringify(projected)).toContain(code);
+      expect(projected.remediation?.action).not.toContain("rea doctor");
+    }
+    // An unresolved selection still does not establish any caller path issue.
+    expect(
+      projectAnalysisError(nativePlistFailure(cause, undefined)).code,
+    ).toBe("execution_failure");
+  },
+);
+
+it.skipIf(process.platform === "win32").each(["ELOOP", "ENAMETOOLONG"])(
+  "reports a real %s at provider admission without running a native command",
+  async (code) => {
+    const root = await createTestTempDirectory("rea-plist-path-");
+    const program = join(root, "program");
+    await writeFile(program, "fixture program");
+    const path = join(
+      root,
+      code === "ELOOP" ? "loop.plist" : `${"x".repeat(300)}.plist`,
+    );
+    if (code === "ELOOP") await symlink("loop.plist", path);
+    const client = new NativeMacOSProvider(
+      {},
+      {
+        async run() {
+          throw new Error("No native command should run before file readiness");
+        },
+      },
+      "darwin",
+    ).createClient({ ...nativeMachoTarget(program), bundleInfoPlist: path });
+    onTestFinished(async () => {
+      await client.close();
+    });
+    for (const requested of [path, undefined]) {
+      const result = await client.execute(
+        "inspect_plist",
+        requested === undefined ? {} : { path: requested },
+      );
+      if (result.ok) throw new Error("Expected plist path refusal");
+      const projected = projectAnalysisError(result.error);
+      expect(projected.code).toBe(
+        requested === undefined ? "capability_unavailable" : "invalid_request",
+      );
+      expect(JSON.stringify(projected)).toContain(code);
+    }
+    expect((await client.close()).ok).toBe(true);
+  },
+);
 
 it("refuses closed client admission before resolving a target or launching tools", async () => {
   const root = await createTestTempDirectory("rea-plist-origin-closed-");

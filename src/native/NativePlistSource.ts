@@ -260,6 +260,14 @@ export const nativePlistFailure = (
       cause,
       capturedOutput,
     });
+  if (code === "ELOOP" || code === "ENAMETOOLONG")
+    return unreadablePlist(
+      selection,
+      code === "ELOOP"
+        ? "its path cannot be resolved because of a symbolic-link loop (ELOOP)"
+        : "its path exceeds the filesystem's name or path limit (ENAMETOOLONG)",
+      { cause, capturedOutput },
+    );
   if (code === "EACCES" || code === "EPERM")
     return new BinaryTargetError(
       path,
